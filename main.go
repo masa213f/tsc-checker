@@ -84,7 +84,7 @@ func main() {
 				continue
 			}
 
-			fmt.Printf("%s, maxSkew=%d, selector=%s\n", ns.Name, tsc.MaxSkew, selector)
+			fmt.Printf("%s, %s, topologyKey=%s, maxSkew=%d, selector=%s\n", ns.Name, tsc.WhenUnsatisfiable, tsc.TopologyKey, tsc.MaxSkew, selector)
 			for _, pod := range pods.Items {
 				fmt.Println("- " + pod.Name)
 			}
