@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"path/filepath"
+	"slices"
+	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,6 +17,12 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
+
+type target struct {
+	tsc          *corev1.TopologySpreadConstraint
+	expectedPods []string
+	actualPods   []string
+}
 
 func main() {
 	var kubeconfig *string
@@ -35,28 +43,25 @@ func main() {
 	}
 	ctx := context.TODO()
 
+	namespaceList := []string{}
 	namespaces, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		panic(err)
 	}
-
 	for _, ns := range namespaces.Items {
-		pods, err := clientset.CoreV1().Pods(ns.Name).List(ctx, metav1.ListOptions{})
+		namespaceList = append(namespaceList, ns.GetName())
+	}
+	sort.Strings(namespaceList)
+
+	for _, ns := range namespaceList {
+		targetList := map[string]*target{}
+
+		pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			panic(err)
 		}
-
-		tscList := map[string]*corev1.TopologySpreadConstraint{}
-
 		for _, pod := range pods.Items {
 			for _, tsc := range pod.Spec.TopologySpreadConstraints {
-				if tsc.WhenUnsatisfiable == corev1.ScheduleAnyway {
-					continue
-				}
-				if tsc.TopologyKey == corev1.LabelHostname {
-					continue
-				}
-
 				v, err := json.Marshal(tsc)
 				if err != nil {
 					panic(err)
@@ -65,30 +70,53 @@ func main() {
 				h := sha1.Sum(v)
 				hash := hex.EncodeToString(h[:])
 
-				if _, ok := tscList[hash]; !ok {
-					tscList[hash] = tsc.DeepCopy()
+				if _, ok := targetList[hash]; !ok {
+					targetList[hash] = &target{
+						tsc: tsc.DeepCopy(),
+					}
 				}
+				targetList[hash].expectedPods = append(targetList[hash].expectedPods, pod.Name)
 			}
 		}
 
-		for _, tsc := range tscList {
-			selector := metav1.FormatLabelSelector(tsc.LabelSelector)
-			pods, err := clientset.CoreV1().Pods(ns.Name).List(ctx, metav1.ListOptions{
-				LabelSelector: selector,
-			})
+		for _, t := range targetList {
+			selector := metav1.FormatLabelSelector(t.tsc.LabelSelector)
+			pods, err := clientset.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{LabelSelector: selector})
 			if err != nil {
-				panic(err)
-			}
-
-			if len(pods.Items) <= 5 {
+				fmt.Printf("failed to list pods from tsc.labelSelector: ns=%s, selector=%s, %v\n", ns, selector, err)
 				continue
 			}
 
-			fmt.Printf("%s, %s, topologyKey=%s, maxSkew=%d, selector=%s\n", ns.Name, tsc.WhenUnsatisfiable, tsc.TopologyKey, tsc.MaxSkew, selector)
+			actualPods := []string{}
 			for _, pod := range pods.Items {
-				fmt.Println("- " + pod.Name)
+				actualPods = append(actualPods, pod.GetName())
 			}
-			fmt.Println("")
+			sort.Strings(actualPods)
+			t.actualPods = actualPods
+		}
+
+		hashList := []string{}
+		for hash, _ := range targetList {
+			hashList = append(hashList, hash)
+		}
+		sort.Strings(hashList)
+
+		for _, hash := range hashList {
+			t := targetList[hash]
+			selector := metav1.FormatLabelSelector(t.tsc.LabelSelector)
+
+			if slices.Compare(t.expectedPods, t.actualPods) != 0 {
+				fmt.Println("Inconsistent TSC")
+				fmt.Printf("- %s, %s, topologyKey=%s, maxSkew=%d, selector=%s\n", ns, t.tsc.WhenUnsatisfiable, t.tsc.TopologyKey, t.tsc.MaxSkew, selector)
+				fmt.Printf("- expectedPods=%v\n", t.expectedPods)
+				fmt.Printf("- actualPods  =%v\n", t.actualPods)
+				fmt.Println("")
+			} else if len(t.actualPods) > 5 {
+				fmt.Println("TooManyPods")
+				fmt.Printf("- %s, %s, topologyKey=%s, maxSkew=%d, selector=%s\n", ns, t.tsc.WhenUnsatisfiable, t.tsc.TopologyKey, t.tsc.MaxSkew, selector)
+				fmt.Printf("- pods=%v\n", t.actualPods)
+				fmt.Println("")
+			}
 		}
 	}
 }
