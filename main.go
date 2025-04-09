@@ -111,7 +111,7 @@ func main() {
 				fmt.Printf("- expectedPods=%v\n", t.expectedPods)
 				fmt.Printf("- actualPods  =%v\n", t.actualPods)
 				fmt.Println("")
-			} else if len(t.actualPods) > 5 {
+			} else if len(t.actualPods) > 5 && t.tsc.WhenUnsatisfiable == corev1.DoNotSchedule {
 				fmt.Println("TooManyPods")
 				fmt.Printf("- %s, %s, topologyKey=%s, maxSkew=%d, selector=%s\n", ns, t.tsc.WhenUnsatisfiable, t.tsc.TopologyKey, t.tsc.MaxSkew, selector)
 				fmt.Printf("- pods=%v\n", t.actualPods)
